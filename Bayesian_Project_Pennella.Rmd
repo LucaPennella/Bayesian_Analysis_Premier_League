@@ -1,0 +1,1193 @@
+---
+title: "Bayesian Statistics Project Pennella"
+output: html_document
+date: "2023-06-13"
+bibliography: references_bayes.bib  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, error = FALSE)
+```
+```{r load-packages, include=FALSE}
+library(dplyr)
+library(magrittr)
+library(knitr)
+library(ggplot2)
+library(tidyr)
+library(forcats)
+library(kableExtra)
+library(rstan)
+library(loo)
+library(forcats)
+```
+```{r}
+require(rstan)
+```
+
+## Bayesian model for the prediction of Premier League results
+
+~~~
+```{r}
+set.seed(42)
+#read csv
+data = read.csv("/Users/lucap/OneDrive/Desktop/Bayesian/df_full_premierleague.csv", sep = ',')
+#make a sub-df for first analysis based on the paper
+df_full = data.frame(data$X, # index
+                 data$season, # season reference
+                 data$home_team, # home team
+                 data$away_team, # away team
+                 data$goal_home_ft, # home team goals scored in the match
+                 data$goal_away_ft, # away team goals scored in the match
+                 data$home_possession, # home team possession in the match
+                 data$away_possession, # away team possession in the match
+                 data$home_shots, # home team shots in the match
+                 data$away_shots, # away team shots in the match
+                 data$home_passes, # home team passes in the match
+                 data$away_passes # away team passes in the match
+                 )
+
+df_full <- df_full %>% 
+  rename(
+    "g" = "data.X"
+    ,"season" = "data.season"
+    ,"home_team" = "data.home_team"
+    ,"away_team" = "data.away_team"
+    ,"goal_home" = "data.goal_home_ft"
+    ,"goal_away" = "data.goal_away_ft"
+    ,"home_possession" = "data.home_possession"
+    ,"away_possession" = "data.away_possession"
+    ,"home_shots" = "data.home_shots" 
+    ,"away_shots" = "data.away_shots" 
+    ,"home_passes" = "data.home_passes"
+    ,"away_passes" = "data.away_passes"
+  )
+
+#df_full = df_full[ df_full$data.season == '20/21' | df_full$data.season == '19/20' | df_full$data.season == '18/19' , ]
+df1 = df_full[df_full$season == '18/19' , ]
+df1['g'] <- df1['g'] - 3038
+
+df1 <- df1 %>%   mutate(home_id = case_when(home_team == "Manchester United" ~ 1
+                                            ,home_team == "Leicester City" ~ 2
+                                            ,home_team == "Wolverhampton Wanderers" ~ 3
+                                            ,home_team == "Cardiff City" ~ 4
+                                            ,home_team == "West Ham United" ~ 5
+                                            ,home_team == "Liverpool" ~ 6
+                                            ,home_team == "Everton" ~ 7
+                                            ,home_team == "Southampton" ~ 8
+                                            ,home_team == "Brighton and Hove Albion" ~ 9
+                                            ,home_team == "Arsenal" ~ 10
+                                            ,home_team == "AFC Bournemouth" ~ 11
+                                            ,home_team == "Manchester City" ~ 12
+                                            ,home_team == "Watford" ~ 13
+                                            ,home_team == "Crystal Palace" ~ 14
+                                            ,home_team == "Chelsea" ~ 15
+                                            ,home_team == "Burnley" ~ 16
+                                            ,home_team == "Tottenham Hotspur" ~ 17
+                                            ,home_team == "Huddersfield Town" ~ 18
+                                            ,home_team == "Newcastle United" ~ 19
+                                            ,home_team == "Fulham" ~ 20
+                                            ,TRUE ~ 99  ))
+
+df1 <- df1 %>%   mutate(away_id = case_when(away_team == "Manchester United" ~ 1
+                                            ,away_team == "Leicester City" ~ 2
+                                            ,away_team == "Wolverhampton Wanderers" ~ 3
+                                            ,away_team == "Cardiff City" ~ 4
+                                            ,away_team == "West Ham United" ~ 5
+                                            ,away_team == "Liverpool" ~ 6
+                                            ,away_team == "Everton" ~ 7
+                                            ,away_team == "Southampton" ~ 8
+                                            ,away_team == "Brighton and Hove Albion" ~ 9
+                                            ,away_team == "Arsenal" ~ 10
+                                            ,away_team == "AFC Bournemouth" ~ 11
+                                            ,away_team == "Manchester City" ~ 12
+                                            ,away_team == "Watford" ~ 13
+                                            ,away_team == "Crystal Palace" ~ 14
+                                            ,away_team == "Chelsea" ~ 15
+                                            ,away_team == "Burnley" ~ 16
+                                            ,away_team == "Tottenham Hotspur" ~ 17
+                                            ,away_team == "Huddersfield Town" ~ 18
+                                            ,away_team == "Newcastle United" ~ 19
+                                            ,away_team == "Fulham" ~ 20
+                                            ,TRUE ~ 99  ))
+```
+~~~
+
+# Introduction
+
+This project aims to address the goal prediction problem in football matches.I will develop and implement several Bayesian models using the R and Stan programming languages.
+
+Within a Bayesian framework, @karlis2009bayesian conducted research to model goals and average estimates for each team, enabling the prediction of football match results using the Skellam distribution. Bayesian and Markov Chain Monte Carlo (MCMC) methods were employed to obtain predictive distributions of goal differences. @baio2010bayesian proposed a Bayesian hierarchical model for the number of goals scored by two teams in a single match, utilizing the Poisson distribution to model the goals scored by each team.
+
+Additionally, @saraiva2016predicting used a Bayesian framework to predict match outcomes during the 2010 World Cup games.
+
+Moreover, @egidi2018combining and @egidi2021comparing focused on predicting football results, initially by combining historical data with bookmaker odds in 2018, and later by comparing Goal-Based and Result-Based approaches in 2020.
+
+The models presented by @baio2010bayesian will be thoroughly examined in the following section and implemented in the Stan modeling language to evaluate their performance, providing a brief analysis of the 2018/19 Premier League season. Additionally, another implementation has been conducted, modeling the problem through the negative binomial distribution.
+
+# EDA
+
+## Our Dataset
+
+The data collected comes directly from the site https://www.premierleague.com/ and after a short pre-processing of the data we obtained the following dataset:
+
+* **g**: match number
+* **season**: reference year      
+* **home_team**: home team     
+* **away_team**: away team     
+* **goal_home**: goals scored by the home team    
+* **goal_away**: goals scored by the away team
+* **home_possession**: ball possession of the home team
+* **away_possession**: ball possession of the away team
+* **home_shots**: shots by the home team     
+* **away_shots**: shots by the away team   
+* **home_passes**:number of passes by the home team     
+* **away_passes**:number of passes by the away team       
+* **home_id**:  uniquely team index for home team       
+* **away_id**:  uniquely team index for away team 
+
+The data refer to the Premier League season 2018/2019.
+
+First let's look at the distribution of the number of goals between home and away in 380 matches:
+```{r, echo=FALSE, message = FALSE, fig.align='center'}
+
+ds_goal <- df1[, c("goal_home", "goal_away")]
+ds_goal <- tidyr::pivot_longer(ds_goal, cols = c("goal_home", "goal_away"), names_to = "MatchType", values_to = "Goals")
+
+ggplot(data = ds_goal, aes(x = Goals, fill = MatchType)) +
+  geom_histogram(position = "dodge", binwidth = 0.5, color = "black", alpha = 0.8) +
+  geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5, position = position_dodge(width = 0.9)) +
+  scale_x_continuous(breaks = seq(0, 8, 1)) +
+  labs(x = 'Goals', y = 'Number of Games', title = 'Comparison of Home and Away Goals') +
+  theme_minimal()
+
+
+```
+We can see with the mode for both classes there is one goal, however, the teams playing at home score a greater number of goals.
+
+A further aspect to investigate are the teams with the best attacks and the best defenses:
+
+```{r, echo=FALSE, message = FALSE, fig.align='center'}
+
+home_att <- df1[, c("home_team", "goal_home")]
+away_att <- df1[, c("away_team", "goal_away")]
+home_att <- aggregate(home_att$goal_home, list(home_att$home_team), FUN = sum) 
+away_att <- aggregate(away_att$goal_away, list(away_att$away_team), FUN = sum)
+colnames(home_att) <- c("team", "goal_home")
+colnames(away_att) <- c("team", "goal_away")
+
+goals_teams <- merge(home_att, away_att, by = "team")
+goals_teams$tot_goals <- goals_teams$goal_away + goals_teams$goal_home
+
+all_goals <- goals_teams[, c("team", "tot_goals")]
+
+all_goals %>%
+  mutate(team = fct_reorder(team, tot_goals))  %>%
+  ggplot(aes(x = team, y = tot_goals)) +
+  geom_bar(stat = "identity", fill = "#f68060", alpha = 0.6, width = 0.8) +
+  geom_text(aes(label = tot_goals), vjust = -0.2, size = 3, color = "black") +
+  coord_flip() +
+  xlab("") +
+  theme_minimal() +
+  labs(y = 'Number of Goals', title = 'Number of goals scored by team')
+
+
+
+```
+```{r, echo=FALSE, message = FALSE, fig.align='center'}
+tables = read.csv("/Users/lucap/OneDrive/Desktop/Bayesian/epl_1819.csv", sep = ',')
+
+
+sub_goal <- tables[, c("Team","defence_goals_conceeded")]
+
+sub_goal %>%
+  mutate(Team = fct_reorder(Team, desc(defence_goals_conceeded)))  %>%
+  ggplot(aes(x = Team, y = defence_goals_conceeded)) +
+  geom_bar(stat = "identity", fill = "#f68060", alpha = 0.6, width = 0.8) +
+  geom_text(aes(label = defence_goals_conceeded), vjust = -0.2, size = 3, color = "black") +
+  coord_flip() +
+  xlab("") +
+  theme_minimal() + 
+  labs(y = 'Number of Goals', title = 'Number of goals conceded by team')
+
+
+```
+Manchester City, Liverpool and Tottenham had both great attack and great defence, while others, such as Fulham, Cardiff and Huddersfield all had the worst performances in terms of goals scored and conceded.
+Noteworthy is the case of Bournemouth, in the top 8 as an attack but with the third worst defense. It is also possible to note how Arsenal have the third best attack but with a defense outside the top 8.
+
+```{r, echo=FALSE, message = FALSE, fig.align='center'}
+
+tables_f <- tables[, c("Team","general_points")]
+colnames(tables_f) <- c("Team","Points")
+
+#knitr::kable(tables_f)
+
+tables_f %>%
+  kbl() %>%
+  kable_paper(full_width = T) %>%
+  column_spec(2, color = "white",
+              background = spec_color(tables_f$Points[1:20], end = 0.7),
+              popover = paste("am:", mtcars$am[1:8]))
+
+```
+Looking at the goals scored and conceded together with the standings, we can see how City and Liverpool, the best in terms of gap in the two variables, obtain many points (15 more than the third classified). Same pattern for the worst in terms of goals scored and conceded that tend to relegate at the end of the championship.
+This trend does not surprise us.
+Looking at Chelsea and Wolverhampton we can see how a good defense at the expense of the attack seems to yield more points.
+
+```{r, echo=FALSE, message = FALSE, fig.align='center'}
+
+# type of win ratio
+df1$diff = df1$goal_home - df1$goal_away
+df1 = df1 %>% mutate(result = ifelse(diff > 0, "Home Team win", ifelse(diff < 0, "Away Team win", "Draw")))
+
+result = count(df1, result)
+
+
+ggplot(result, aes(x = reorder(result, -n), y = n, fill = factor(n))) + 
+  geom_bar(stat = "identity") +
+  theme_minimal() + 
+  labs(x = "", y = "Freq", title = "Type of victory") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+In 380 matches, home wins accounted for 47.6% versus 33.7% away wins, these numbers seem to show an advantage when playing within 'friendly walls'.
+This trend can also be seen by observing the histogram of home and away goals.
+
+# Blaio and Blangiardo Models
+## First model
+
+@baio2010bayesian propose a Bayesian hierarchical model with the aim of estimating the characteristics that lead a team to lose or win a game or predict the score of a particular game, testing its predictive strength on data relating to the Italian championship Serie A.
+In the paper, $y_{g1}$ and $y_{g2}$ are used to indicate the number of goals scored by the home and the away
+team in the g-th match of the season. To allow for a direct comparison at the work of @karlis2003analysis, the authors considered the Italian Serie A season 1991/1992.
+In the model, the vector of observed counts, $y = (y_{g1}, y_{g2})$ is modeled as an independent Poisson:
+$$y_{gj}|θ_{gj} ∼ Poisson(θ_{gj})$$
+where the parameters $θ = (θ_{g1}, θ_{g2})$ represent the scoring intensity in the g-th game for the team playing at home (j = 1) and away (j = 2), respectively.
+The authors model these parameters according to a formulation that has been used widely in the statistical literature, assuming a log-linear random effect model:
+$$logθ_{g1}  = home + att_{h(g)} + def_{a(g)} $$
+$$logθ_{g2}  = att_{a(g)} + def_{h(g)} $$
+The parameter *home* represents the advantage for the team hosting the game and they assume that this effect is constant for all the teams and throughout the season. In addition, the scoring intensity is determined jointly by the attack and defense ability of the two teams involved, represented by the parameters *att* and *def*, respectively. The nested indexes *h(g), a(g) = 1, . . ., T* identify the team that is playing at home (away) in the g-th game of the season.
+To illustrate the need for a parameter to represent the advantage for playing at home, in the last 5 full seasons of the Premier League:
+![Picture 1](Homewin.png)
+The data structure for the model is presented in Table 1 and consist of the name and code of the teams, and the number of goals scored for each game of the season. As is possible to see, the indexes $h(_g)$ and $a(_g)$ are uniquely associated with one of the teams.  For example, in Table 1  Manchester United are always associated with the index 1, whether they play away, as for $h(_1)$, or at home, as for $a(_33)$.
+
+```{r}
+mcu <- df1[c(1, 33), ]
+knitr::kable(mcu)
+```
+
+Prior distributions for all the parameters in the model need to be specified, in this model approximately flat prior distributions are used to encode ignorance. The variable *home* is modelled as a fixed effect, assuming a standard flat prior distribution:
+$$ home ∼ Normal(0, 10000) $$
+The priors for the attack and defence parameters for each *team, t = 1, ..., T*, where *T* is
+the number of teams, are:
+$$att_t ∼ Normal(µ_{att}, τ_{att}),  \hspace{10mm}  def_t ∼ Normal(µ_{def}, τ_{def} )$$
+As suggested by various works, we need to impose some identifiability constraints on the team-specific parameters. In line with @karlis2003analysis,
+we use a sum-to-zero constraint, that is
+$$\sum_{t=1}^T att_t=0, \hspace{10mm} \sum_{t=1}^T def_t=0,$$
+Finally, the hyper-priors of the attack and defense effects are modelled independently using again flat prior distributions:
+$$µ_{att} ∼ N(0, 10000), \hspace{10mm} µ_{def} ∼ N(0, 10000)$$
+$$τ_{att} ∼ Gamma(0.1, 0.1),\hspace{10mm} τ_{def} ∼ Gamma(0.1, 0.1)$$
+In conclusion, we can summarize the model for the number of goals scored by two teams, $y_{g1}$ (home team) and $y_{g2}$ (away team) in the g-th match, respectively:
+$$ y_{g1} | home, att_{h(g)}, def_{a(g)} ∼ Poisson(exp(home + att_{h(g)} + def_{a(g)})) $$
+$$ y_{g2} | att_{a(g)}, def_{h(g)} ∼ Poisson(exp(att_{a(g)} + def_{h(g)}))$$
+
+##  Second model
+In Bayesian hierarchical models, the challenge of "overshrinkage" arises, leading extreme occurrences to be pulled towards the mean of overall observations. In our specific scenario, this could result in an underestimation of the performances of top teams and an overestimation of the performances of the worst teams.
+
+Our exploratory data analysis (EDA) further revealed significant discrepancies between the attacking and defensive abilities of teams competing for championships and those struggling to avoid relegation. Therefore, relying on a common process to draw attack and defense propensities might not adequately capture these differences. As a result, Baio and Blangiardo propose a more sophisticated model to address these parameters.
+
+While the assumptions for scoring intensities $\theta_{gj}$ and the home effect remain unchanged, the authors introduce three distinct generating mechanisms for attack and defense propensities: one for top teams, another for mid-table teams, and a third for bottom-table teams.
+
+For each team, two latent variables, $grp^{att}(t)$ and $grp^{def}(t)$, are introduced. These variables can take values 1, 2, or 3, indicating whether the team's attack/defense performance falls in the bottom, mid, or top tier, respectively. Proper categorical distributions will be assigned to these variables, which depend on two vectors of prior probabilities.
+
+$$
+  \pi^{att} = (\pi_{1t}^{att}, \pi_{2t}^{att}, \pi_{3t}^{att}) \hspace{10mm} \pi^{def} = (\pi_{1t}^{def}, \pi_{2t}^{def}, \pi_{3t}^{def})   
+$$
+
+To model the probability of each team belonging to a specific category, we can use two vectors that represent these probabilities. One common approach is to model them using a Dirichlet distribution with parameters (1, 1, 1), which results in minimally informative models. Alternatively, one can incorporate prior information, such as historical team performances from previous years, to better inform the model.
+
+Moving on to the attack and defense effects, they are modeled as follows:
+
+$$
+  att_t = \sum_{k=1}^3 \pi^{att}_{t,k} \times \text{nct}(\mu^{att}_k, \sigma^{att}_k, \nu=4), \hspace{10mm} def_t = \sum_{k=1}^3 \pi^{def}_{t,k} \times \text{nct}(\mu^{def}_k, \sigma^{def}_k, \nu=4),
+$$
+If a team have poor performance, then they are likely to show low (negative) propensity to score, and high (positive) propensity to concede goals. This can be represented using suitable truncated Normal distributions, such as:
+
+$$
+  \mu^{att}_{1} \sim \text{truncNormal}(0,1,-3,0) \hspace{10mm} \mu^{def}_{1} \sim \text{truncNormal}(0,1,0,3)
+$$
+
+For the top teams, we can imagine a symmetric situation, that is:
+
+$$
+  \mu^{att}_{3} \sim \text{truncNormal}(0,1,0,3) \hspace{10mm} \mu^{def}_{3} \sim \text{truncNormal}(0,1,-3,0)
+$$
+
+Finally, for the average teams we assume that the mean of the attack and defense effect have independent dispersed Normal distributions:
+
+$$
+  \mu^{att}_{2} \sim \text{Normal}(0,1) \hspace{10mm} \mu^{def}_{2} \sim \text{Normal}(0,1)
+$$
+For all the groups k = 1, 2, 3, sigma are modeled using independent minimally informative InvGamma distributions
+
+$$
+  \sigma^{att}_{k} \sim \text{invGamma}(0.1,0.1) \hspace{10mm} \sigma^{def}_{k} \sim \text{invGamma}(0.1,0.1)
+$$
+
+# Negative Binomial model
+
+In this section, we present an alternative Bayesian hierarchical model to predict the number of goals scored by two teams in a match. The key distinction is that, instead of employing a Poisson distribution to model the goals, this model will utilize the negative binomial distribution.
+
+Stan also provides an alternative parameterization of the negative binomial distribution directly using a mean (i.e., location) parameter and a parameter that controls overdispersion relative to the square of the mean.
+The vector of observed goals, $y = (y_{g1}, y_{g2})$ are modelled using a independent Negative Binomial distribution:
+$$
+y_{gj} |  \mu_{gj},n_{j} \sim  NegBinomial2(\mu_{gj},n_{j})
+$$
+
+In the model proposed by @baio2010bayesian, the *home* parameter represents the advantage conferred to the team playing at home, and it is assumed to remain constant for all teams throughout the season. However, this assumption appears to be overly generalized, as certain football teams exhibit a notably strong home advantage, while for others, the effect of playing at home seems to be less pronounced.
+
+Let's consider an example from the 2018/19 season, focusing on Crystal Palace. During that season, they managed to secure only 5 wins while playing at home, scoring a total of 19 goals. In contrast, they performed better in away games, scoring 32 goals and achieving 9 victories.
+
+This suggests that playing at home did not significantly impact Crystal Palace's performance. On the other hand, for Chelsea, the situation was different. They seemed to fare better at home, scoring 39 goals, compared to 24 goals in away games, during the 2018/19 Premier League season.
+
+Although looking solely at the number of goals scored cannot fully represent a team's overall performance, it does highlight the varying effects of playing at home for different teams. Considering a constant home-effect parameter may not adequately describe these variations. Therefore, in this model, we will differentiate the attack and defense parameters for each team based on whether they are playing at home or away, better capturing the home effect for each team.
+The prior distributions for the home and away parameters for the attacking and defensive strengths of each team, *t = 1, ..., T*, where *T* is the number of *teams*, are:
+
+$$
+  home\_att_t  \sim Normal(\mu_{h\_att},\sigma^{2}_{att}) \\
+  away\_att_t  \sim Normal(\mu_{a\_att},\sigma^{2}_{att}) \\
+  home\_def_t  \sim Normal(\mu_{h\_def},\sigma^{2}_{def}) \\
+  away\_def_t  \sim Normal(\mu_{a\_def},\sigma^{2}_{def}) \\
+$$
+Then the prior distributions for the hyperparameters are given as follows:
+
+$$
+ \mu_{h\_att} \sim N(0.2,1) \\
+ \mu_{a\_att} \sim N(0,1) \\
+ \mu_{h\_def} \sim N(-0.2,1) \\
+ \mu_{a\_def} \sim N(0,1) \\
+ \sigma^{2}_{att}\sim Gamma(10,10) \\
+ \sigma^{2}_{def}\sim Gamma(10,10) 
+$$
+Lastly, the prior distributions for the size n in the model are:
+$$
+ n_{home} \sim  Gamma(2.5,0.05) \\
+ n_{away}  \sim  Gamma(2.5,0.05) \\
+$$
+The prior distributions for nhome and naway were chosen to have a large variance, since we
+were uncertain about these parameters apriori.
+
+
+# Implementation of the models
+
+
+##  Implementation of Baio & Blangiardo's first model
+
+As previously mentioned, Baio and Blangiardo model the problem with independent Poissons:
+$$y_{gj}|θ_{gj} ∼ Poisson(θ_{gj})$$
+
+
+```{r, echo=FALSE, message = FALSE, fig.align='center'}
+
+g = nrow(df1)
+
+
+stan_dat_1 <- list(
+  g = g, 
+  teams = length(unique(df1$home_team)), #number of teams
+  home_id = df1$home_id,
+  away_id = df1$away_id,
+  goal_home = df1$goal_home,
+  goal_away = df1$goal_away
+)
+
+#####################################
+# (simple) Poisson Regression Model #
+#####################################
+
+comp_model_HP <- stan_model(file = "Hierarchical_Poisson_Regression_model_new.stan")
+# Sampling (refresh = 0 avoid printing the trace)
+fit_HP <- sampling(comp_model_HP, 
+                   data = stan_dat_1, cores = 8, iter = 6000)
+```
+
+```{r}
+#check_hmc_diagnostics(fit_HP)
+#traceplot(fit_HP,par=c("home"))
+```
+### Home effect
+
+```{r, fig.height=5, fig.width=5}
+
+home_t <- summary(fit_HP, pars = "home", probs = c('0.025', '0.975'))
+home_t <- home_t$summary
+home_t <- as.data.frame(home_t)
+home_t <- home_t[1:5]
+
+kbl(home_t, format = "html", align = "c" , digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+
+### Attack and defense
+
+Plot the attack and defense force
+
+```{r, fig.height=5, fig.width=5}
+nhparams = extract(fit_HP)
+
+#scatterplot with attack e defense force
+attack = colMeans(nhparams$att)
+defense = colMeans(nhparams$def)
+plot(attack,defense,xlim=c(-0.4,1.1))
+abline(h=0)
+abline(v=0)
+teams = unique(df1$home_team)
+text(attack,defense, labels=teams, cex=0.7, pos=4)
+```
+
+```{r}
+
+#Table attack
+teams <- unique(df1$home_team)
+
+fit.summary <- summary(fit_HP)
+att_t <- summary(fit_HP, pars = "att", probs = c('0.025', '0.975'))
+att_t <- att_t$summary
+att_t <- as.data.frame(att_t)
+
+att_t <- att_t %>%
+  mutate(team = teams) %>%
+  relocate(team, .before = mean)
+att_t <- att_t[1:6]
+att_t <- att_t[order(-att_t$mean), ]
+
+kbl(att_t, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+```{r}
+#Table Def
+
+def_t<-summary(fit_HP,pars = "def", probs=c('0.025','0.975'))
+def_t<-def_t$summary
+def_t<-as.data.frame(def_t)
+
+def_t<-def_t%>%mutate(team=teams)%>%relocate(team, .before = mean)
+
+def_t<-def_t[1:6]
+def_t <- def_t[order(def_t$mean), ]
+
+kbl(def_t, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+The **positive home effect** was as anticipated since playing at home usually provides an advantage.
+
+
+**MCI, Liverpool, and Arsenal**, the top 3 scorers of the championship, also demonstrate the **highest attack effect**. Similarly, **AFC Bournemouth, Huddersfield Town, and Fulham**, who faced defensive challenges throughout the year, exhibit the **highest defensive effect**, resulting in more goals for the opposing team.
+
+
+### Posterior predictive results
+
+```{r}
+#home goal and away goal simulation
+goal_home_for <- as.matrix(fit_HP, pars="goal_home_pred")
+goal_away_for <- as.matrix(fit_HP, pars="goal_away_pred")
+
+goal_home_for = round(colMeans(goal_home_for), 0)
+goal_away_for = round(colMeans(goal_away_for), 0)
+
+#create simulated ds
+season_sim_ds = data.frame(
+g_sim = df1$g,
+home_team_sim = df1$home_team,
+away_team_sim = df1$away_team,
+home_id_sim = df1$home_id,
+away_id_sim = df1$away_id,
+goal_home_sim = goal_home_for,
+goal_away_sim = goal_away_for
+)
+
+standigs_away_sim = season_sim_ds %>%
+  group_by(away_team_sim) %>%
+  rename(team = away_team_sim) %>%
+  summarise(
+    pts_away = sum(goal_away_sim > goal_home_sim) * 3 + sum(goal_away_sim == goal_home_sim),
+    away_wins = sum(goal_away_sim > goal_home_sim),
+    away_ties = sum(goal_away_sim == goal_home_sim),
+    away_losses = sum(goal_away_sim < goal_home_sim),
+    away_scored = sum(goal_away_sim),
+    away_conceded = sum(goal_home_sim),
+    away_goal_diff = away_scored - away_conceded)
+
+standigs_home_sim = season_sim_ds %>%
+  group_by(home_team_sim) %>%
+  rename(team = home_team_sim) %>%
+  summarise(
+    pts_home = sum(goal_home_sim > goal_away_sim) * 3 + sum(goal_home_sim == goal_away_sim),
+    home_wins = sum(goal_home_sim > goal_away_sim),
+    home_ties = sum(goal_home_sim == goal_away_sim),
+    home_losses = sum(goal_home_sim < goal_away_sim),
+    home_scored = sum(goal_home_sim),
+    home_conceded = sum(goal_away_sim),
+    home_goal_diff = home_scored - home_conceded)
+
+standigs_sim = standigs_home_sim %>%
+  left_join(standigs_away_sim, by="team") %>%
+  group_by(team, .drop=FALSE) %>%
+  summarise(
+    Pt = pts_home + pts_away,
+    V = away_wins + home_wins,
+    P = away_ties + home_ties,
+    S = away_losses + home_losses,
+    GF = away_scored + home_scored,
+    GS = away_conceded + home_conceded,
+    DR = GF - GS
+  )
+
+standigs_sim <- standigs_sim %>%
+  arrange(desc(Pt))
+
+# Creiamo una tabella con i dati ordinati
+standigs_sim_table <- kable(standigs_sim, format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  kable_styling("striped", full_width = FALSE)
+
+# Stampa la tabella
+#standigs_sim_table
+
+
+tables_f <- tables[, c("Team","general_points","general_won","general_draw","general_lost","attack_scored",	"defence_goals_conceeded",	"general_goal_difference"
+)]
+colnames(tables_f) <-  c("Team","Pt_o","V_o","P_o","S_o","GF_o",	"GS_o",	"DR_o")
+
+tables_f <- kable(tables_f, format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  kable_styling("striped", full_width = FALSE)
+
+# Applica lo stile alle tabelle
+standings_sim_table_styled <- kable_styling(standigs_sim_table, latex_options = "hold_position")
+tables_f_styled <- kable_styling(tables_f, latex_options = "hold_position")
+
+# Unisci le tabelle affiancate
+table_combined <- paste0(standings_sim_table_styled, "\n\n", tables_f_styled)
+
+# Visualizza le tabelle affiancate
+knitr::asis_output(table_combined)
+
+
+```
+
+
+**The simulated ranking accurately predicts the positions of the top and bottom 5 teams in the standings**. However, there are slight discrepancies for Arsenal, which was predicted to finish third but ended the season in fifth place, despite having the third-best attack. The predicted points for Arsenal were much higher than the observed points.
+
+In the relegation battle, the model penalizes Fulham heavily, even though they finished second to last in the league with a 10-point gap from Huddersfield Town. 
+
+Overall, the model successfully captures the relative strengths of the teams in terms of goal-scoring ability but overestimates the points for teams at the top of the standings and underestimates the points for teams at the bottom. This phenomenon is evident in the goal predictions but not as much in the points predictions, suggesting that **the regression-to-the-mean effect is observable in the goals but not at the points level**.
+
+##  Implementation of Baio & Blangiardo's second model
+
+The second model aims to gain a more comprehensive understanding of how all teams will perform throughout the year. **By eliminating the assumption of a common distribution for the attack and defense effects, the issue of "overshrinkage" is effectively addressed. However, this change comes with a trade-off, as it significantly increases the number of parameters in the model**.
+
+In the context of this extended model, Baio and Blangiardo make assumptions about the behavior of different teams. For top-tier teams, characterized by their strong scoring ability and low vulnerability to conceding goals, they anticipate a positive (negative) value for the attack (defense) effect. Conversely, for bottom-tier teams, they expect to observe the opposite behavior, where a negative (positive) value is associated with the attack (defense) effect.
+
+```{r}
+dir_alp_att = read.csv("/Users/lucap/OneDrive/Desktop/Bayesian/dir_alp_att.csv", sep = ';')
+dir_alp_def = read.csv("/Users/lucap/OneDrive/Desktop/Bayesian/dir_alp_def.csv", sep = ';')
+
+stan_dat_2 = list(
+  g = g, 
+  teams = length(unique(df1$home_team)), #number of teams
+  home_id = df1$home_id,
+  away_id = df1$away_id,
+  goal_home = df1$goal_home,
+  goal_away = df1$goal_away,
+  dir_alp_att = dir_alp_att,
+  dir_alp_def = dir_alp_def
+)
+
+comp_model_HPG <- stan_model(file = "Hierarchical_groups_Poisson_Regression_model.stan")
+# Sampling (refresh = 0 avoid printing the trace)
+fit_HPG <- sampling(comp_model_HPG, 
+                   data = stan_dat_2, core = 8, iter = 4000)
+```
+
+### Home effect
+```{r, }
+pg_params = extract(fit_HPG)
+fit.summary<-summary(fit_HPG)
+
+home_t <- summary(fit_HPG, pars = "home", probs = c('0.025', '0.975'))
+home_t <- home_t$summary
+home_t <- as.data.frame(home_t)
+home_t <- home_t[1:5]
+
+kbl(home_t, format = "html", align = "c" , digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+### Attack and defense
+
+Plot the attack and defense force
+
+```{r}
+pg_params = extract(fit_HPG)
+#scatterplot with attack e defense force
+attack = colMeans(pg_params$att)
+defense = colMeans(pg_params$def)
+plot(attack,defense,xlim=c(-0.4,1.1))
+abline(h=0)
+abline(v=0)
+teams = unique(df1$home_team)
+text(attack,defense, labels=teams, cex=0.7, pos=4)
+```
+
+
+```{r}
+
+#Table attack
+teams <- unique(df1$home_team)
+
+fit.summary <- summary(fit_HPG)
+att_t <- summary(fit_HPG, pars = "att", probs = c('0.025', '0.975'))
+att_t <- att_t$summary
+att_t <- as.data.frame(att_t)
+
+att_t <- att_t %>%
+  mutate(team = teams) %>%
+  relocate(team, .before = mean)
+att_t <- att_t[1:6]
+att_t <- att_t[order(-att_t$mean), ]
+
+kbl(att_t, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+```{r}
+#Table Def
+
+def_t<-summary(fit_HPG,pars = "def", probs=c('0.025','0.975'))
+def_t<-def_t$summary
+def_t<-as.data.frame(def_t)
+
+def_t<-def_t%>%mutate(team=teams)%>%relocate(team, .before = mean)
+
+def_t<-def_t[1:6]
+def_t <- def_t[order(def_t$mean), ]
+
+kbl(def_t, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+The **home effect in this model closely resembles that of the first model**.
+
+Moreover, the outcomes bear resemblance to the results obtained from model 1. However, the values are more pronounced, with higher attack effects for the top scorers (MCI, Liverpool), and similarly, elevated defense effects for the teams that conceded more goals (Huddersfield Town, Fulham, and Cardiff). This outcome aligns with our expectations, as we anticipated that **Model 2 would be capable of providing more accurate estimates for both exceptional and underperforming teams**.
+Regarding defensive strength, Model 1 appears to provide more consistent results and aligns well with the observed values. On the other hand, Model 2, except for the top two ranked teams, seems to inaccurately capture the relative strengths of the teams.
+
+
+
+### Posterior predictive results
+
+```{r}
+#home goal and away goal simulation
+goal_home_for_hpg <- as.matrix(fit_HPG, pars="goal_home_pred")
+goal_away_for_hpg <- as.matrix(fit_HPG, pars="goal_away_pred")
+
+goal_home_for_hpg = round(colMeans(goal_home_for_hpg), 0)
+goal_away_for_hpg = round(colMeans(goal_away_for_hpg), 0)
+
+
+
+#create simulated ds
+season_sim_ds_hpg = data.frame(
+  g_sim = df1$g,
+  home_team_sim = df1$home_team,
+  away_team_sim = df1$away_team,
+  home_id_sim = df1$home_id,
+  away_id_sim = df1$away_id,
+  goal_home_sim = goal_home_for_hpg,
+  goal_away_sim = goal_away_for_hpg
+)
+
+
+standigs_away_sim_hpg = season_sim_ds_hpg %>%
+  group_by(away_team_sim) %>%
+  rename(team = away_team_sim) %>%
+  summarise(
+    pts_away = sum(goal_away_sim > goal_home_sim) * 3 + sum(goal_away_sim == goal_home_sim),
+    away_wins = sum(goal_away_sim > goal_home_sim),
+    away_ties = sum(goal_away_sim == goal_home_sim),
+    away_losses = sum(goal_away_sim < goal_home_sim),
+    away_scored = sum(goal_away_sim),
+    away_conceded = sum(goal_home_sim),
+    away_goal_diff = away_scored - away_conceded)
+
+standigs_home_sim_hpg  = season_sim_ds_hpg  %>%
+  group_by(home_team_sim) %>%
+  rename(team = home_team_sim) %>%
+  summarise(
+    pts_home = sum(goal_home_sim > goal_away_sim) * 3 + sum(goal_home_sim == goal_away_sim),
+    home_wins = sum(goal_home_sim > goal_away_sim),
+    home_ties = sum(goal_home_sim == goal_away_sim),
+    home_losses = sum(goal_home_sim < goal_away_sim),
+    home_scored = sum(goal_home_sim),
+    home_conceded = sum(goal_away_sim),
+    home_goal_diff = home_scored - home_conceded)
+
+standigs_sim_hpg  = standigs_home_sim_hpg  %>%
+  left_join(standigs_away_sim_hpg , by="team") %>%
+  group_by(team, .drop=FALSE) %>%
+  summarise(
+    Pt = pts_home + pts_away,
+    V = away_wins + home_wins,
+    P = away_ties + home_ties,
+    S = away_losses + home_losses,
+    GF = away_scored + home_scored,
+    GS = away_conceded + home_conceded,
+    DR = GF - GS
+  )
+
+
+# Ordina la tabella in base alla colonna Pt (punti totali) in ordine decrescente
+standigs_sim_hpg <- standigs_sim_hpg %>%
+  arrange(desc(Pt))
+
+# Creiamo una tabella con i dati ordinati
+standigs_sim_table_hpg  <- kable(standigs_sim_hpg , format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  kable_styling("striped", full_width = FALSE)
+
+
+# Applica lo stile alle tabelle
+standings_sim_table_styled <- kable_styling(standigs_sim_table_hpg, latex_options = "hold_position")
+tables_f_styled <- kable_styling(tables_f, latex_options = "hold_position")
+
+# Unisci le tabelle affiancate
+table_combined <- paste0(standings_sim_table_styled, "\n\n", tables_f_styled)
+
+# Visualizza le tabelle affiancate
+knitr::asis_output(table_combined)
+
+
+```
+
+The simulated ranking captures the top two teams more accurately in terms of goals and provides a **more precise ranking of the teamsin the upper part of the table**. However, in the relegation battle, the model **includes Burnley among the relegated teams instead of Cardiff**.
+
+**The use of non-informative priors may make it more challenging for the model to differentiate between teams in the lower part of the table, as they tend to be more evenly matched.**
+
+
+**The points for the top-ranked teams are observed to be significantly overestimated**, which might be attributed to the model's potential lack of precision in assessing the defensive strength of other teams.
+
+## Model comparison
+
+However, we can also compare the two models using predictive information criteria (PIC). The PIC is a useful tool for model comparison and selection, and it helps us assess the predictive performance of different models. In this context, we can employ the `loo` package, which provides a straightforward way to compute and compare the predictive accuracy of Bayesian models. By comparing the PIC values for the two models, we can gain insights into which model performs better in terms of predictive power and generalization to new data.
+
+### Home goals
+
+```{r}
+### Home
+loglik1_home = as.matrix(fit_HPG, pars="log_lik_1")
+loglik2_home = as.matrix(fit_HP, pars="log_lik_1")
+
+# LOO
+loo1_home = loo(loglik1_home)
+loo2_home = loo(loglik2_home)
+
+loo_diff_home = loo_compare(loo1_home, loo2_home)
+print(loo_diff_home, simplify = FALSE)
+
+# WAIC
+#waic1_home = waic(loglik1_home)
+#waic2_home = waic(loglik2_home)
+#
+#waic_diff_home = loo_compare(waic1_home, waic2_home)
+#print(waic_diff_home, simplify = FALSE)
+
+```
+The results suggest that model 2 exhibits a higher expected log pointwise predictive density (elpd) compared to model 1, indicating its superior performance in terms of predictive accuracy.
+Nevertheless, there is some uncertainty in these estimates, as evidenced by the presence of standard errors. 
+Furthermore, **model 2 demonstrates a marginally lower LOO information criterion (looic) than model 1**.
+
+### Away goals
+
+```{r}
+loglik1_away = as.matrix(fit_HPG, pars="log_lik_2")
+loglik2_away = as.matrix(fit_HP, pars="log_lik_2")
+
+# LOO
+loo1_away = loo(loglik1_away)
+loo2_away = loo(loglik2_away)
+
+loo_diff_away = loo_compare(loo1_away, loo2_away)
+print(loo_diff_away, simplify = FALSE)
+
+
+# WAIC
+#waic1_away = waic(loglik1_away)
+#waic2_away = waic(loglik2_away)
+#
+#waic_diff_away = loo_compare(waic1_away, waic2_away)
+#print(waic_diff_away, simplify = FALSE)
+#
+#rm(model_1_fit, model_2_fit)
+#rm(loglik1_away, loglik2_away)
+```
+
+Based on the presented results, model 2 exhibits an elpd that is approximately 17.7 units higher than model 1. This suggests that model 2 has a better predictive accuracy.
+
+Furthermore, model 2 has a lower looic of 1074.3 compared to 1109.7 (model 1).
+
+Overall, these findings suggest that **model 2 outperforms model 1 in terms of predictive away goals**.
+
+
+## Negative Binomial
+
+```{r}
+
+comp_model_NB <- stan_model(file = "Hierarchical_Negative_binomial_model_new.stan")
+
+
+# Sampling (refresh = 0 avoid printing the trace)
+fit_NB <- sampling(comp_model_NB, 
+                   data = stan_dat_1, core = 8, iter = 4000)
+
+
+
+
+nb_params = extract(fit_NB)
+
+
+```
+
+
+
+### Attack and defense at home
+
+
+```{r}
+#Table attack home 
+
+fit.summary<-summary(fit_NB)
+att_h_nb<-summary(fit_NB,pars = c("home_att"), probs=c('0.025','0.975'))
+att_h_nb<-att_h_nb$summary
+att_h_nb<-as.data.frame(att_h_nb)
+
+att_h_nb<-att_h_nb%>%mutate(team=teams)%>%relocate(team, .before = mean)
+
+att_h_nb<-att_h_nb[1:6]
+att_h_nb <- att_h_nb[order(-att_h_nb$mean), ]
+
+kbl(att_h_nb, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+
+```{r}
+#Table defense home 
+
+fit.summary<-summary(fit_NB)
+def_h_nb<-summary(fit_NB,pars = c("home_def"), probs=c('0.025','0.975'))
+def_h_nb<-def_h_nb$summary
+def_h_nb<-as.data.frame(def_h_nb)
+
+def_h_nb<-def_h_nb%>%mutate(team=teams)%>%relocate(team, .before = mean)
+
+def_h_nb<-def_h_nb[1:6]
+def_h_nb <- def_h_nb[order(def_h_nb$mean), ]
+
+kbl(def_h_nb, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+
+```{r}
+home_table = read.csv("/Users/lucap/OneDrive/Desktop/Bayesian/Home Table.csv", sep = ';')
+
+kbl(home_table, format = "html", align = "c" , digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+By observing the attack and defense strengths calculated by the model **for the home match performances**, we can notice how it accurately captures the relative strengths, almost **matching all positions in terms of goals scored and goals conceded**.
+
+### Attack and defense away
+```{r}
+
+#Table attack away 
+
+fit.summary<-summary(fit_NB)
+att_a_nb<-summary(fit_NB,pars = c("away_att"), probs=c('0.025','0.975'))
+att_a_nb<-att_a_nb$summary
+att_a_nb<-as.data.frame(att_a_nb)
+
+att_a_nb<-att_a_nb%>%mutate(team=teams)%>%relocate(team, .before = mean)
+
+att_a_nb<-att_a_nb[1:6]
+att_a_nb <- att_a_nb[order(-att_a_nb$mean), ]
+
+kbl(att_a_nb, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+
+
+```{r}
+#Table defense away 
+
+fit.summary<-summary(fit_NB)
+def_a_nb<-summary(fit_NB,pars = c("away_def"), probs=c('0.025','0.975'))
+def_a_nb<-def_a_nb$summary
+def_a_nb<-as.data.frame(def_a_nb)
+
+def_a_nb<-def_a_nb%>%mutate(team=teams)%>%relocate(team, .before = mean)
+
+def_a_nb<-def_a_nb[1:6]
+def_a_nb <- def_a_nb[order(def_a_nb$mean), ]
+
+kbl(def_a_nb, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+```{r}
+away_table = read.csv("/Users/lucap/OneDrive/Desktop/Bayesian/Away Table.csv", sep = ';')
+
+kbl(away_table, format = "html", align = "c" , digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+The model for away matches appears to capture the strength of **some teams well in terms of attack (Arsenal, MCU, Crystal Palace) and defense (Newcastle, Wolverhampton, Liverpool)**. However, it **struggles to capture the attacking performances of MCI and Liverpool, as well as the defensive performance of MCI**.
+
+The issue might be attributed to the priors, coding errors, or data quality, but despite conducting various tests and experiments, I have been unable to resolve the problem.
+
+
+```{r}
+#home goal and away goal simulation
+goal_home_for_nb <- as.matrix(fit_NB, pars="goal_home_pred")
+goal_away_for_nb <- as.matrix(fit_NB, pars="goal_away_pred")
+
+goal_home_for_nb = round(colMeans(goal_home_for_nb), 0)
+goal_away_for_nb = round(colMeans(goal_away_for_nb), 0)
+
+
+
+#create simulated ds
+season_sim_ds_nb = data.frame(
+  g_sim = df1$g,
+  home_team_sim = df1$home_team,
+  away_team_sim = df1$away_team,
+  home_id_sim = df1$home_id,
+  away_id_sim = df1$away_id,
+  goal_home_sim = goal_home_for_nb,
+  goal_away_sim = goal_away_for_nb
+)
+
+
+standigs_away_sim_nb = season_sim_ds_nb %>%
+  group_by(away_team_sim) %>%
+  rename(team = away_team_sim) %>%
+  summarise(
+    pts_away = sum(goal_away_sim > goal_home_sim) * 3 + sum(goal_away_sim == goal_home_sim),
+    away_wins = sum(goal_away_sim > goal_home_sim),
+    away_ties = sum(goal_away_sim == goal_home_sim),
+    away_losses = sum(goal_away_sim < goal_home_sim),
+    away_scored = sum(goal_away_sim),
+    away_conceded = sum(goal_home_sim),
+    away_goal_diff = away_scored - away_conceded)
+
+standigs_home_sim_nb = season_sim_ds_nb %>%
+  group_by(home_team_sim) %>%
+  rename(team = home_team_sim) %>%
+  summarise(
+    pts_home = sum(goal_home_sim > goal_away_sim) * 3 + sum(goal_home_sim == goal_away_sim),
+    home_wins = sum(goal_home_sim > goal_away_sim),
+    home_ties = sum(goal_home_sim == goal_away_sim),
+    home_losses = sum(goal_home_sim < goal_away_sim),
+    home_scored = sum(goal_home_sim),
+    home_conceded = sum(goal_away_sim),
+    home_goal_diff = home_scored - home_conceded)
+
+standigs_sim_nb = standigs_home_sim_nb %>%
+  left_join(standigs_away_sim_nb, by="team") %>%
+  group_by(team, .drop=FALSE) %>%
+  summarise(
+    Pt = pts_home + pts_away,
+    V = away_wins + home_wins,
+    P = away_ties + home_ties,
+    S = away_losses + home_losses,
+    GF = away_scored + home_scored,
+    GS = away_conceded + home_conceded,
+    DR = GF - GS
+  )
+
+
+standigs_sim_nb <- standigs_home_sim_nb %>%
+  left_join(standigs_away_sim_nb, by = "team") %>%
+  group_by(team, .drop = FALSE) %>%
+  summarise(
+    Pt = pts_home + pts_away,
+    V = away_wins + home_wins,
+    P = away_ties + home_ties,
+    S = away_losses + home_losses,
+    GF = away_scored + home_scored,
+    GS = away_conceded + home_conceded,
+    DR = GF - GS
+  )
+
+# Ordina la tabella in base alla colonna Pt (punti totali) in ordine decrescente
+standigs_sim_nb <- standigs_sim_nb %>%
+  arrange(desc(Pt))
+
+# Creiamo una tabella con i dati ordinati
+standigs_sim_table_nb<- kable(standigs_sim_nb, format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  kable_styling("striped", full_width = FALSE)
+
+
+# Applica lo stile alle tabelle
+standings_sim_table_styled <- kable_styling(standigs_sim_table_nb, latex_options = "hold_position")
+
+# Unisci le tabelle affiancate
+table_combined <- paste0(standings_sim_table_styled, "\n\n", tables_f_styled)
+
+# Visualizza le tabelle affiancate
+knitr::asis_output(table_combined)
+
+```
+
+The issues encountered with the **away match estimates also impact the accuracy** of the league table predictions, leading to several errors in terms of rankings and goals.
+
+## Conclusions and Potential Improvements
+
+The project developed is an application of the models presented in the paper by @baio2010bayesian to the data of the Premier League 2018/2019, with an additional extension involving the modeling of the problem through the Negative Binomial distribution with an alternative parameterization.
+
+The obtained results are comparable to those of Baio and Blangiardo's paper. Specifically, the second model seems to capture the behavior of teams playing away from home more effectively.
+
+The binomial model achieves accurate results for teams playing at home, but it appears to encounter challenges with teams performing away from home. The aim was to overcome the limitation of considering the home effect as a fixed effect.
+
+Further improvements could be achieved by considering:
+
+1. Optimization of the modeling through Negative Binomial distribution.
+ Incorporation of more informative priors based on the strength of each team.
+
+2. Consideration of factors related to the seasonality of a championship (e.g., stage of the championship, team form, European competitions, injuries, suspensions).
+
+3. Inclusion of additional variables such as refereeing or other factors (e.g., possession, passes).
+
+4. Utilization of more complex models, such as the bivariate Poisson, to account for the different phases of a match.
+
+## Appendix
+### Zero Inflated Poisson
+
+Zero-inflated and hurdle models both provide mixtures of a Poisson and Bernoulli probability mass function to allow more flexibility in modeling the probability of a zero outcome. Zero-inflated models, as defined by Lambert (1992), add additional probability mass to the outcome of zero.
+There is a probability θ of observing a zero, and a probability 1 - θ of observing a count with a *Poisson(λ)* distribution.
+Given the probability θ and the intensity λ, the distribution for y_{n} can be written as:
+
+\begin{equation*}
+y_{n} = 
+\begin{cases}
+0 & \text{with probability } θ, \\
+\text{Poisson(}y_{n}\text{|λ)}  & \text{with probability } 1 - θ.
+\end{cases}
+\end{equation*}
+
+```{r}
+
+comp_model_ZIP<- stan_model(file = "ZIP_Regression_model.stan")
+# Sampling (refresh = 0 avoid printing the trace)
+fit_ZIP <- sampling(comp_model_ZIP, 
+                    data = stan_dat_1, core = 8, iter = 4000)
+
+```
+
+
+
+### Home effect
+```{r, }
+ZIP_params = extract(fit_ZIP)
+fit.summary<-summary(fit_ZIP)
+
+home_t <- summary(fit_ZIP, pars = "home", probs = c('0.025', '0.975'))
+home_t <- home_t$summary
+home_t <- as.data.frame(home_t)
+home_t <- home_t[1:5]
+
+kbl(home_t, format = "html", align = "c" , digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+### Attack and defense
+
+Plot the attack and defense force
+
+```{r, fig.height=5, fig.width=5}
+#scatterplot with attack e defense force
+attack = colMeans(ZIP_params$att)
+defense = colMeans(ZIP_params$def)
+plot(attack,defense,xlim=c(-0.4,1.1))
+abline(h=0)
+abline(v=0)
+teams = unique(df1$home_team)
+text(attack,defense, labels=teams, cex=0.7, pos=4)
+```
+
+```{r}
+
+#Table attack
+teams <- unique(df1$home_team)
+
+fit.summary <- summary(fit_ZIP)
+att_t <- summary(fit_ZIP, pars = "att", probs = c('0.025', '0.975'))
+att_t <- att_t$summary
+att_t <- as.data.frame(att_t)
+
+att_t <- att_t %>%
+  mutate(team = teams) %>%
+  relocate(team, .before = mean)
+att_t <- att_t[1:6]
+att_t <- att_t[order(-att_t$mean), ]
+
+kbl(att_t, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+
+```{r}
+#Table Def
+
+def_t<-summary(fit_ZIP,pars = "def", probs=c('0.025','0.975'))
+def_t<-def_t$summary
+def_t<-as.data.frame(def_t)
+
+def_t<-def_t%>%mutate(team=teams)%>%relocate(team, .before = mean)
+
+def_t<-def_t[1:6]
+def_t <- def_t[order(def_t$mean), ]
+
+kbl(def_t, format = "html", align = "c", digits = 3) %>%
+  kable_paper(full_width = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
